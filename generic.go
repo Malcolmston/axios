@@ -11,7 +11,7 @@ func GetJSON[T any](c *Client, rawURL string, cfg ...*RequestConfig) (T, error) 
 		return out, err
 	}
 	if err := resp.JSON(&out); err != nil {
-		return out, &Error{Message: "decode json", Request: resp.Request, Response: resp, Err: err}
+		return out, &Error{Message: "decode json", Request: resp.Request, Response: resp, Err: err, Code: ErrCodeBadResponse}
 	}
 	return out, nil
 }

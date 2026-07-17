@@ -66,4 +66,58 @@
 // of attempts, the Backoff schedule, and a RetryOn predicate. The defaults
 // (DefaultBackoff, DefaultRetryOn) retry on transport errors and 5xx responses
 // with exponential backoff.
+//
+// # Cancellation
+//
+// Requests honor a context (Config.Context / RequestConfig.Context) and, for an
+// axios-style API, an AbortController: create one with NewAbortController, pass
+// its Signal via RequestConfig.Signal, and call Abort to cancel. The legacy
+// CancelToken (NewCancelToken) is also supported. IsCancel reports whether an
+// error came from a cancellation.
+//
+// # Progress
+//
+// Config/RequestConfig OnUploadProgress and OnDownloadProgress receive
+// ProgressEvent values as the request and response bodies are transferred.
+//
+// # Transforms
+//
+// TransformRequest and TransformResponse are pipelines that rewrite the raw
+// body bytes (and may mutate headers) around encoding/decoding, complementing
+// the request/response interceptors.
+//
+// # Response types and streaming
+//
+// ResponseType selects how the body is delivered. The default buffers into
+// Response.Body; ResponseStream leaves it unread on Response.Stream for
+// incremental consumption (call Response.Close when done).
+//
+// # Query parameters
+//
+// Params (url.Values) and ParamsMap (nested map, flattened with FlattenParams)
+// are merged into the URL. ArrayFormat controls how repeated values are encoded
+// (repeat/brackets/indices/comma), or supply a ParamsSerializer to take over
+// entirely. GetUri returns the resolved URL without sending a request.
+//
+// # Decompression
+//
+// Responses are transparently decompressed (gzip and deflate) and an
+// Accept-Encoding header is advertised, unless Config.Decompress is disabled.
+//
+// # Redirects and size guards
+//
+// MaxRedirects caps or disables redirect following (or supply a RedirectPolicy).
+// MaxContentLength and MaxBodyLength bound response and request body sizes.
+//
+// # XSRF/CSRF
+//
+// With XSRFCookieName and XSRFHeaderName set, a token is copied from the
+// client's cookie jar into the outgoing request header.
+//
+// # Instances and helpers
+//
+// Create returns a new client whose config is deep-merged over an existing one
+// (request > instance > defaults precedence throughout). All and Spread run and
+// combine several requests; IsAxiosError, AsError and Error.ToJSON aid error
+// handling; HeaderDefaults provides common/get/post default header groups.
 package axios
