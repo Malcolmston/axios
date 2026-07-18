@@ -3,6 +3,31 @@
 All notable changes to this project are documented here. This project adheres
 to semantic versioning.
 
+## 0.3.0
+
+Further parity push toward the axios feature set. All additions are backward
+compatible and standard-library only.
+
+### Added
+
+- Multipart uploads: a `FormData` builder (`NewFormData`) mirroring the browser
+  FormData object axios accepts as a body, with `AddField`, `AddFile`,
+  `AddFileBytes`, `AddFilePart`, `SetBoundary`/`Boundary`, `ContentType`,
+  `Len`, `Reader`, `Bytes` and `WriteTo`. Encoding is deterministic (fixed
+  default boundary, insertion order preserved).
+- `FormToJSON`: parses flat bracket-notation form values (`a[b][c]`, `a[]`,
+  `a[0]`) into a nested `map[string]any`, mirroring the axios `formToJSON`
+  helper and inverting bracket flattening.
+- `MergeConfig`: exposes the deep config merge used by `Create`/`Client.Create`
+  (axios `mergeConfig`).
+- Typed request helpers `PostJSON`/`PutJSON`/`PatchJSON`/`DeleteJSON` and the
+  method-agnostic `RequestJSON`, complementing `GetJSON` for the typed
+  `axios.post<T>()`-style calls.
+- Response helpers: status classifiers `IsInformational`/`IsRedirect`/
+  `IsClientError`/`IsServerError`, header accessors `ContentType`/
+  `ContentLength`/`Location`/`Cookies`, and `RetryAfter` (parses both the
+  seconds and HTTP-date forms of the `Retry-After` header).
+
 ## 0.2.0
 
 Large parity push toward the axios feature set. All additions are backward
