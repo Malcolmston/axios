@@ -1,0 +1,10 @@
+{
+  "repo": "axios",
+  "upstream": "axios/axios",
+  "parityBefore": "66%",
+  "parityAfter": "100%",
+  "upstreamCasesSynced": 38,
+  "gapsFound": 13,
+  "gapsClosed": 13,
+  "asOf": "2026-07-18"
+}
