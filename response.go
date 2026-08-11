@@ -52,6 +52,20 @@ func (r *Response) Text() string {
 	return string(r.Bytes())
 }
 
+// Data returns the response body the way axios' default transformResponse
+// exposes res.data: the body parsed as JSON when it parses (regardless of the
+// Content-Type, mirroring transitional.forcedJSONParsing), otherwise the raw
+// string (mirroring transitional.silentJSONParsing for malformed JSON). The
+// result is any of the JSON kinds — map, slice, string, float64, bool or nil.
+func (r *Response) Data() any {
+	txt := r.Text()
+	var v any
+	if json.Unmarshal([]byte(txt), &v) == nil {
+		return v
+	}
+	return txt
+}
+
 // Bytes returns the raw response body bytes. For a streaming response it reads
 // the stream to completion (and caches the result in Body).
 func (r *Response) Bytes() []byte {

@@ -98,8 +98,19 @@ func flattenInto(out url.Values, key string, v any) {
 			flattenInto(out, key+"["+k+"]", sub)
 		}
 	case []any:
-		for _, sub := range val {
-			flattenInto(out, key, sub)
+		// Scalar elements are collected under the same key so the chosen
+		// ArrayFormat (brackets/indices/repeat) is applied at serialization
+		// time. Complex elements (objects or nested arrays) are always indexed,
+		// matching axios' a[0][k]=v output for an array of objects.
+		for i, sub := range val {
+			switch sub.(type) {
+			case map[string]any, []any:
+				flattenInto(out, key+"["+strconv.Itoa(i)+"]", sub)
+			default:
+				if sub != nil {
+					out.Add(key, stringifyParam(sub))
+				}
+			}
 		}
 	case nil:
 		// skip nils, matching axios which omits null/undefined params.

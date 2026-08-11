@@ -92,15 +92,18 @@ func encodeURIComponentJS(s string) string {
 }
 
 // EncodeURIComponent encodes a query key or value the way axios's helpers/buildURL
-// encode function does: like JavaScript's encodeURIComponent, but with ':', '$'
-// and ',' left unescaped and a space encoded as '+' rather than "%20". Square
-// brackets and other reserved characters remain percent-encoded.
+// encode function does: like JavaScript's encodeURIComponent, but with ':', '$',
+// ',', '[' and ']' left unescaped and a space encoded as '+' rather than "%20".
+// Leaving the square brackets literal is what makes axios' bracketed array and
+// nested-object keys (a[]=1, n[x]=1) appear unescaped on the wire.
 func EncodeURIComponent(s string) string {
 	e := encodeURIComponentJS(s)
 	e = strings.ReplaceAll(e, "%3A", ":")
 	e = strings.ReplaceAll(e, "%24", "$")
 	e = strings.ReplaceAll(e, "%2C", ",")
 	e = strings.ReplaceAll(e, "%20", "+")
+	e = strings.ReplaceAll(e, "%5B", "[")
+	e = strings.ReplaceAll(e, "%5D", "]")
 	return e
 }
 

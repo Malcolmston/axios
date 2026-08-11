@@ -86,12 +86,12 @@ func TestParityBuildURL(t *testing.T) {
 	if got := BuildURL("/foo", url.Values{"foo": {"bar"}}, ArrayFormatBrackets); got != "/foo?foo=bar" {
 		t.Errorf("params: got %q", got)
 	}
-	// object params -> foo[bar]=baz (brackets percent-encoded).
-	if got := BuildURL("/foo", url.Values{"foo[bar]": {"baz"}}, ArrayFormatBrackets); got != "/foo?foo%5Bbar%5D=baz" {
+	// object params -> foo[bar]=baz (axios leaves the brackets literal).
+	if got := BuildURL("/foo", url.Values{"foo[bar]": {"baz"}}, ArrayFormatBrackets); got != "/foo?foo[bar]=baz" {
 		t.Errorf("object params: got %q", got)
 	}
-	// array params with brackets encoding.
-	if got := BuildURL("/foo", url.Values{"foo": {"bar", "baz"}}, ArrayFormatBrackets); got != "/foo?foo%5B%5D=bar&foo%5B%5D=baz" {
+	// array params with brackets (literal, as axios emits them).
+	if got := BuildURL("/foo", url.Values{"foo": {"bar", "baz"}}, ArrayFormatBrackets); got != "/foo?foo[]=bar&foo[]=baz" {
 		t.Errorf("array params: got %q", got)
 	}
 	// special char params: ':' '$' ',' kept literal, space -> '+'.
@@ -137,7 +137,7 @@ func TestParityBuildURL(t *testing.T) {
 func TestParityEncodeURIComponent(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{":$, ", ":$,+"},
-		{"foo[bar]", "foo%5Bbar%5D"},
+		{"foo[bar]", "foo[bar]"},
 		{"a b", "a+b"},
 		{"a+b", "a%2Bb"},
 	}

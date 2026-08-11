@@ -54,7 +54,7 @@ func mergeConfig(base, override Config) Config {
 	if override.ValidateStatus != nil {
 		out.ValidateStatus = override.ValidateStatus
 	}
-	if override.MaxRedirects != 0 {
+	if override.MaxRedirects != nil {
 		out.MaxRedirects = override.MaxRedirects
 	}
 	if override.RedirectPolicy != nil {

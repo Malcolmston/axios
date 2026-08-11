@@ -164,6 +164,11 @@ func (f *FormData) Bytes() ([]byte, error) {
 	if err := mw.Close(); err != nil {
 		return nil, err
 	}
+	// The undici FormData encoder axios uses appends an extra CRLF after the
+	// closing boundary ("--boundary--\r\n\r\n"); mime/multipart stops at
+	// "--boundary--\r\n". Add the trailing CRLF so the encoded body is
+	// byte-identical to axios'.
+	buf.WriteString("\r\n")
 	return buf.Bytes(), nil
 }
 

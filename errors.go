@@ -21,9 +21,54 @@ const (
 	// done (timeout, abort).
 	ErrCodeCanceled = "ERR_CANCELED"
 	// ErrCodeBadResponse indicates the response was received but rejected
-	// (status validation, response transform/interceptor, decode).
+	// (status validation, 5xx status, response decode, oversized body).
 	ErrCodeBadResponse = "ERR_BAD_RESPONSE"
+	// ErrCodeTimeout indicates the request exceeded its configured timeout. It
+	// mirrors axios' ECONNABORTED.
+	ErrCodeTimeout = "ECONNABORTED"
+	// ErrCodeConnRefused indicates the connection was refused by the peer. It
+	// mirrors axios' ECONNREFUSED.
+	ErrCodeConnRefused = "ECONNREFUSED"
+	// ErrCodeTooManyRedirects indicates the redirect chain exceeded the
+	// configured maximum. It mirrors axios' ERR_FR_TOO_MANY_REDIRECTS.
+	ErrCodeTooManyRedirects = "ERR_FR_TOO_MANY_REDIRECTS"
 )
+
+// userError wraps an error thrown by user-supplied code (a request interceptor)
+// so the request pipeline can propagate it verbatim instead of wrapping it in
+// an *Error. It mirrors axios, where an interceptor's rejection is not an
+// AxiosError.
+type userError struct{ err error }
+
+func (e *userError) Error() string { return e.err.Error() }
+func (e *userError) Unwrap() error { return e.err }
+
+// invalidURLError reports that a request URL could not be parsed. In axios this
+// surfaces as the platform's TypeError, which is not an AxiosError, so this type
+// deliberately does not satisfy the *Error identity used by IsAxiosError. Its
+// error code (ERR_INVALID_URL) is still discoverable via ErrorCode.
+type invalidURLError struct{ err error }
+
+func (e *invalidURLError) Error() string { return "axios: invalid url: " + e.err.Error() }
+func (e *invalidURLError) Unwrap() error { return e.err }
+
+// ErrorCode returns the axios-style error code carried by err, or "" when there
+// is none. It understands both *Error (via its Code field) and the port's
+// non-AxiosError config failures such as an invalid URL, so callers can read the
+// code independently of whether IsAxiosError is true.
+func ErrorCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	if ae := AsError(err); ae != nil {
+		return ae.Code
+	}
+	var iu *invalidURLError
+	if errors.As(err, &iu) {
+		return ErrCodeInvalidURL
+	}
+	return ""
+}
 
 // Error is the typed error returned by the client when a request fails, either
 // because of a transport/network problem or because the response status was

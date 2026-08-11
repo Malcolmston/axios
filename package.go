@@ -1,5 +1,9 @@
 package axios
 
+// Version is the port's version string. It is used to build the default
+// User-Agent header ("axios/<Version>"), mirroring how axios identifies itself.
+const Version = "0.3.0"
+
 // The following package-level helpers delegate to the default client returned
 // by Default. Replace it with SetDefault to change global behaviour.
 

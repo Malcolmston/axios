@@ -47,7 +47,7 @@ func TestGetJSONRoundTrip(t *testing.T) {
 	if u.Name != "Ada" || u.Age != 36 {
 		t.Errorf("decoded = %+v", u)
 	}
-	if resp.Status != 200 || !strings.Contains(resp.StatusText, "200") {
+	if resp.Status != 200 || resp.StatusText != "OK" {
 		t.Errorf("status = %d %q", resp.Status, resp.StatusText)
 	}
 }
@@ -170,7 +170,7 @@ func TestPostForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Post: %v", err)
 	}
-	if ct != "application/x-www-form-urlencoded" {
+	if ct != "application/x-www-form-urlencoded;charset=utf-8" {
 		t.Errorf("content-type = %q", ct)
 	}
 	if !strings.Contains(raw, "q=hello+world") {
@@ -191,7 +191,9 @@ func TestPostRawBytesAndString(t *testing.T) {
 	if _, err := c.Put("/raw", []byte("abc")); err != nil {
 		t.Fatalf("Put bytes: %v", err)
 	}
-	if raw != "abc" || ct != "application/octet-stream" {
+	// A raw body carries no Content-Type of its own, so the request inherits the
+	// method default (application/x-www-form-urlencoded for PUT), matching axios.
+	if raw != "abc" || ct != "application/x-www-form-urlencoded" {
 		t.Errorf("bytes: raw=%q ct=%q", raw, ct)
 	}
 
@@ -531,7 +533,7 @@ func TestBaseURLJoining(t *testing.T) {
 	}{
 		{"https://x.test/api", "users", "https://x.test/api/users"},
 		{"https://x.test/api/", "users", "https://x.test/api/users"},
-		{"https://x.test/api", "/users", "https://x.test/users"},
+		{"https://x.test/api", "/users", "https://x.test/api/users"},
 		{"https://x.test", "https://y.test/z", "https://y.test/z"},
 	}
 	c := New(Config{})

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -66,11 +68,13 @@ type Config struct {
 	// ValidateStatus decides which status codes resolve successfully. If nil,
 	// 2xx codes are treated as success and everything else yields an *Error.
 	ValidateStatus func(status int) bool
-	// MaxRedirects controls redirect following. Zero uses the default of 10; a
-	// negative value disables following (the 3xx response is returned); a
-	// positive value caps the redirect chain and errors when exceeded. Honored
-	// only when HTTPClient is nil.
-	MaxRedirects int
+	// MaxRedirects controls redirect following, mirroring axios' maxRedirects.
+	// nil leaves the transport's default policy in place (redirects are
+	// followed). A non-nil pointer to 0 means "do not follow": the 3xx response
+	// is returned as-is. A positive value caps the chain and fails with
+	// ERR_FR_TOO_MANY_REDIRECTS when exceeded. A negative value fails on the
+	// first redirect. Honored only when HTTPClient is nil.
+	MaxRedirects *int
 	// RedirectPolicy fully overrides redirect handling (http.Client
 	// CheckRedirect) when set. Honored only when HTTPClient is nil.
 	RedirectPolicy func(req *http.Request, via []*http.Request) error
@@ -196,7 +200,7 @@ func New(cfg Config) *Client {
 		if transport != nil {
 			hc.Transport = transport
 		}
-		if cfg.MaxRedirects != 0 || cfg.RedirectPolicy != nil {
+		if cfg.MaxRedirects != nil || cfg.RedirectPolicy != nil {
 			hc.CheckRedirect = c.checkRedirect
 		}
 	}
@@ -204,21 +208,26 @@ func New(cfg Config) *Client {
 	return c
 }
 
+// errTooManyRedirects is returned by checkRedirect when the redirect chain
+// exceeds the configured maximum. It maps to axios' ERR_FR_TOO_MANY_REDIRECTS.
+var errTooManyRedirects = errors.New("axios: maximum number of redirects exceeded")
+
 // checkRedirect implements the client's redirect policy (see Config.MaxRedirects
-// and Config.RedirectPolicy).
+// and Config.RedirectPolicy). It is installed only when one of those is set.
 func (c *Client) checkRedirect(req *http.Request, via []*http.Request) error {
 	if c.cfg.RedirectPolicy != nil {
 		return c.cfg.RedirectPolicy(req, via)
 	}
-	max := c.cfg.MaxRedirects
-	if max < 0 {
+	if c.cfg.MaxRedirects == nil {
+		return nil
+	}
+	max := *c.cfg.MaxRedirects
+	if max == 0 {
+		// axios maxRedirects:0 means "do not follow"; return the 3xx response.
 		return http.ErrUseLastResponse
 	}
-	if max == 0 {
-		max = 10
-	}
-	if len(via) >= max {
-		return fmt.Errorf("axios: stopped after %d redirects", max)
+	if len(via) > max {
+		return errTooManyRedirects
 	}
 	return nil
 }
@@ -308,13 +317,32 @@ func (c *Client) Request(method, rawURL string, body any, rc *RequestConfig) (*R
 
 	fullURL, err := c.buildURL(rawURL, rc)
 	if err != nil {
-		return nil, &Error{Message: "invalid url", Err: err, Code: ErrCodeInvalidURL}
+		// A malformed URL is a client-side (config) error; axios surfaces the
+		// platform's TypeError here, which is *not* an AxiosError. Mirror that
+		// by returning a distinct, non-*Error value carrying ERR_INVALID_URL.
+		return nil, &invalidURLError{err: err}
+	}
+	// Reject protocols the transport cannot speak before dialing, matching
+	// axios' "Unsupported protocol" ERR_BAD_REQUEST.
+	if u, perr := url.Parse(fullURL); perr == nil {
+		if sc := u.Scheme; sc != "" && sc != "http" && sc != "https" {
+			return nil, &Error{Message: "unsupported protocol " + sc + ":", Code: ErrCodeBadRequest}
+		}
 	}
 
-	bodyBytes, contentType, err := EncodeBody(body)
+	bodyBytes, _, err := EncodeBody(body)
 	if err != nil {
 		return nil, &Error{Message: "encode body", Err: err, Code: ErrCodeBadRequest}
 	}
+
+	// Choose the request Content-Type the way axios does: JSON for structured
+	// values, url-encoded (with charset) for URLSearchParams, and the request
+	// method's default (x-www-form-urlencoded for POST/PUT/PATCH) for raw
+	// string/binary/empty bodies. A user transformRequest replaces the default
+	// serializer, so the body-derived type is dropped in favor of the method
+	// default. An explicit RequestConfig.ContentType always wins.
+	hasTransforms := len(c.requestTransforms(rc)) > 0
+	contentType := requestContentType(method, body, hasTransforms)
 	if rc.ContentType != "" {
 		contentType = rc.ContentType
 	}
@@ -327,7 +355,9 @@ func (c *Client) Request(method, rawURL string, body any, rc *RequestConfig) (*R
 	if ts := c.requestTransforms(rc); len(ts) > 0 {
 		bodyBytes, err = applyRequestTransforms(ts, bodyBytes, transformHeaders)
 		if err != nil {
-			return nil, &Error{Message: "transform request", Err: err, Code: ErrCodeBadRequest}
+			// A throwing transform propagates verbatim in axios (a plain Error,
+			// isAxiosError === false); do the same rather than wrapping it.
+			return nil, err
 		}
 	}
 
@@ -371,12 +401,13 @@ func (c *Client) Request(method, rawURL string, body any, rc *RequestConfig) (*R
 		c.applyAuth(req, rc)
 		c.applyXSRF(req)
 		c.applyAcceptEncoding(req)
+		c.applyDefaultHeaders(req)
 		for _, ri := range c.cfg.RequestInterceptors {
 			if err := ri(req); err != nil {
 				if cancel != nil {
 					cancel()
 				}
-				return nil, nil, err
+				return nil, nil, &userError{err: err}
 			}
 		}
 		return req, cancel, nil
@@ -384,9 +415,24 @@ func (c *Client) Request(method, rawURL string, body any, rc *RequestConfig) (*R
 
 	resp, req, err := c.execute(newReq, rc)
 	if err != nil {
+		// A user callback (request interceptor) that failed propagates verbatim,
+		// matching axios which does not wrap interceptor errors.
+		var ue *userError
+		if errors.As(err, &ue) {
+			return nil, ue.err
+		}
 		code := ErrCodeNetwork
-		if ctx.Err() != nil || IsCancel(err) {
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			code = ErrCodeTimeout // axios: ECONNABORTED
+		case IsCancel(err):
 			code = ErrCodeCanceled
+		case errors.Is(err, errTooManyRedirects):
+			code = ErrCodeTooManyRedirects
+		case errors.Is(err, errMaxContentLength):
+			code = ErrCodeBadResponse
+		case errors.Is(err, syscall.ECONNREFUSED):
+			code = ErrCodeConnRefused
 		}
 		return nil, &Error{Message: "request failed", Request: req, Err: err, Code: code}
 	}
@@ -404,16 +450,30 @@ func (c *Client) Request(method, rawURL string, body any, rc *RequestConfig) (*R
 
 	for _, ri := range c.cfg.ResponseInterceptors {
 		if err := ri(resp); err != nil {
-			return resp, &Error{Message: "response interceptor", Request: req, Response: resp, Err: err, Code: ErrCodeBadResponse}
+			// A throwing response interceptor propagates verbatim in axios
+			// (a plain Error, isAxiosError === false). The response is still
+			// handed back for inspection; because the error is not an *Error,
+			// IsAxiosError/ErrorCode report it as a non-axios failure.
+			return resp, err
 		}
 	}
 
 	if !c.validate(rc, resp.Status) {
+		// axios settles a rejected status with ERR_BAD_REQUEST for 4xx and
+		// ERR_BAD_RESPONSE for 5xx; any other rejected status (e.g. a 2xx or 3xx
+		// turned down by a custom validateStatus) carries no code.
+		code := ""
+		switch resp.Status / 100 {
+		case 4:
+			code = ErrCodeBadRequest
+		case 5:
+			code = ErrCodeBadResponse
+		}
 		return resp, &Error{
 			Message:  "request failed with status " + resp.StatusText,
 			Request:  req,
 			Response: resp,
-			Code:     ErrCodeBadResponse,
+			Code:     code,
 		}
 	}
 	return resp, nil
@@ -479,9 +539,15 @@ func (c *Client) do(req *http.Request, rc *RequestConfig) (*Response, error) {
 		return nil, err
 	}
 
+	// axios' res.statusText is the HTTP reason phrase only ("OK"), whereas
+	// net/http's raw.Status includes the code ("200 OK"); strip the code.
+	statusText := raw.Status
+	if _, rest, ok := strings.Cut(raw.Status, " "); ok {
+		statusText = rest
+	}
 	resp := &Response{
 		Status:     raw.StatusCode,
-		StatusText: raw.Status,
+		StatusText: statusText,
 		Headers:    raw.Header,
 		Request:    req,
 		Raw:        raw,
@@ -525,6 +591,10 @@ func (c *Client) do(req *http.Request, rc *RequestConfig) (*Response, error) {
 	return resp, nil
 }
 
+// errMaxContentLength is returned when a response body exceeds MaxContentLength.
+// It maps to axios' ERR_BAD_RESPONSE ("maxContentLength size ... exceeded").
+var errMaxContentLength = errors.New("axios: response body exceeds MaxContentLength")
+
 // readAllLimited reads all of r, returning an error if limit > 0 and the body
 // exceeds it.
 func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
@@ -536,7 +606,7 @@ func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("axios: response body exceeds MaxContentLength %d", limit)
+		return nil, fmt.Errorf("%w %d", errMaxContentLength, limit)
 	}
 	return data, nil
 }
@@ -559,35 +629,20 @@ func (c *Client) resolveContext(rc *RequestConfig) context.Context {
 }
 
 func (c *Client) buildURL(rawURL string, rc *RequestConfig) (string, error) {
-	base := c.cfg.BaseURL
-	var u *url.URL
-	var err error
-
-	if base != "" && !hasScheme(rawURL) {
-		bu, err := url.Parse(base)
-		if err != nil {
-			return "", err
-		}
-		ref, err := url.Parse(rawURL)
-		if err != nil {
-			return "", err
-		}
-		u = bu.ResolveReference(ref)
-		// ResolveReference drops a base path when ref is rooted; for a
-		// non-rooted ref it joins. Preserve the more intuitive "join" behavior
-		// by re-joining paths when ref is relative.
-		if rawURL != "" && !strings.HasPrefix(rawURL, "/") {
-			u.Path = joinPath(bu.Path, ref.Path)
-		}
-	} else {
-		u, err = url.Parse(rawURL)
-		if err != nil {
-			return "", err
-		}
+	// Combine the configured base with the requested URL using axios' semantics
+	// (helpers/buildFullPath + combineURLs): a base path is preserved and joined
+	// with the request path, while an absolute request URL overrides the base.
+	full := rawURL
+	if c.cfg.BaseURL != "" {
+		full = BuildFullPath(c.cfg.BaseURL, rawURL, true)
+	}
+	// Validate that the combined URL parses so malformed URLs surface as errors.
+	if _, err := url.Parse(full); err != nil {
+		return "", err
 	}
 
 	// Gather all params into a single url.Values, request winning per key.
-	q := u.Query()
+	q := url.Values{}
 	for k, vs := range c.cfg.Params {
 		for _, v := range vs {
 			q.Add(k, v)
@@ -605,12 +660,29 @@ func (c *Client) buildURL(rawURL string, rc *RequestConfig) (string, error) {
 		q[k] = append([]string(nil), vs...)
 	}
 
-	if ser := c.paramsSerializer(rc); ser != nil {
-		u.RawQuery = ser(q)
-	} else {
-		u.RawQuery = SerializeParams(q, c.arrayFormat(rc))
+	if len(q) == 0 {
+		return full, nil
 	}
-	return u.String(), nil
+
+	var serialized string
+	if ser := c.paramsSerializer(rc); ser != nil {
+		serialized = ser(q)
+	} else {
+		serialized = serializeParamsAxios(q, c.arrayFormat(rc))
+	}
+	if serialized == "" {
+		return full, nil
+	}
+	// Append after any existing query, discarding a fragment, exactly like
+	// axios' helpers/buildURL: "?" when the URL has no query, "&" otherwise.
+	if i := strings.IndexByte(full, '#'); i != -1 {
+		full = full[:i]
+	}
+	sep := "?"
+	if strings.IndexByte(full, '?') != -1 {
+		sep = "&"
+	}
+	return full + sep + serialized, nil
 }
 
 func (c *Client) applyHeaders(req *http.Request, rc *RequestConfig, method string, transformHeaders http.Header) {
@@ -675,15 +747,25 @@ func (c *Client) applyXSRF(req *http.Request) {
 	}
 }
 
-// applyAcceptEncoding advertises the encodings the client can transparently
-// decompress, unless the caller set Accept-Encoding explicitly or decompression
-// is disabled.
+// applyAcceptEncoding advertises the codec list axios always sends, regardless
+// of whether decompression is enabled, unless the caller set Accept-Encoding
+// explicitly. Setting it here also stops net/http from negotiating its own
+// transparent gzip, so responses are decompressed by do() instead.
 func (c *Client) applyAcceptEncoding(req *http.Request) {
-	if !c.decompressEnabled() {
-		return
-	}
 	if req.Header.Get("Accept-Encoding") == "" {
-		req.Header.Set("Accept-Encoding", "gzip, deflate")
+		req.Header.Set("Accept-Encoding", "gzip, compress, deflate, br")
+	}
+}
+
+// applyDefaultHeaders sets the default Accept and User-Agent axios ships, unless
+// the caller supplied their own. Accept mirrors defaults.headers.common.Accept;
+// User-Agent identifies the port in axios' "axios/<version>" form.
+func (c *Client) applyDefaultHeaders(req *http.Request) {
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "application/json, text/plain, */*")
+	}
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", "axios/"+Version)
 	}
 }
 
@@ -724,7 +806,14 @@ func (c *Client) arrayFormat(rc *RequestConfig) ArrayFormat {
 	if rc.ArrayFormat != nil {
 		return *rc.ArrayFormat
 	}
-	return c.cfg.ArrayFormat
+	if c.cfg.ArrayFormat != 0 {
+		return c.cfg.ArrayFormat
+	}
+	// axios' default array serialization is bracket notation (a[]=1&a[]=2). The
+	// zero value of ArrayFormat is ArrayFormatRepeat, so callers who explicitly
+	// want repeated keys pass ArrayFormatRepeat via a non-nil pointer (which the
+	// checks above honor); an unset format defaults to brackets to match axios.
+	return ArrayFormatBrackets
 }
 
 func (c *Client) responseType(rc *RequestConfig) ResponseType {
@@ -792,11 +881,47 @@ func EncodeBody(body any) ([]byte, string, error) {
 		}
 		return data, "application/octet-stream", nil
 	default:
-		data, err := json.Marshal(body)
-		if err != nil {
+		// Encode without HTML escaping so <, > and & survive verbatim, matching
+		// JavaScript's JSON.stringify (Go's json.Marshal would emit < etc.).
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(body); err != nil {
 			return nil, "", err
 		}
-		return data, "application/json", nil
+		return bytes.TrimRight(buf.Bytes(), "\n"), "application/json", nil
+	}
+}
+
+// methodDefaultContentType returns the Content-Type axios inherits from
+// defaults.headers[method] for a body that carries no type of its own. POST,
+// PUT and PATCH default to application/x-www-form-urlencoded; other methods
+// carry no default.
+func methodDefaultContentType(method string) string {
+	switch strings.ToUpper(method) {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+		return "application/x-www-form-urlencoded"
+	}
+	return ""
+}
+
+// requestContentType chooses the outgoing Content-Type the way axios' default
+// transformRequest does. Structured values become application/json;
+// URLSearchParams become application/x-www-form-urlencoded;charset=utf-8; raw
+// string/binary/empty bodies fall back to the request method's default header.
+// When a user transformRequest is present it replaces the default serializer,
+// so the body-derived type is discarded and only the method default applies.
+func requestContentType(method string, body any, hasTransforms bool) string {
+	if hasTransforms {
+		return methodDefaultContentType(method)
+	}
+	switch body.(type) {
+	case nil, string, []byte, io.Reader:
+		return methodDefaultContentType(method)
+	case url.Values:
+		return "application/x-www-form-urlencoded;charset=utf-8"
+	default:
+		return "application/json"
 	}
 }
 

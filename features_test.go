@@ -181,8 +181,12 @@ func TestTransformRequestError(t *testing.T) {
 		func(body []byte, h http.Header) ([]byte, error) { return nil, errors.New("nope") },
 	}})
 	_, err := c.Post("http://example.invalid/", "x")
-	if err == nil || !strings.Contains(err.Error(), "transform request") {
+	// A throwing transformRequest propagates verbatim (axios does not wrap it).
+	if err == nil || !strings.Contains(err.Error(), "nope") {
 		t.Fatalf("err = %v", err)
+	}
+	if IsAxiosError(err) {
+		t.Errorf("a transform error must not be an AxiosError")
 	}
 }
 
@@ -213,7 +217,7 @@ func TestBuildURLArrayFormatAndSerializer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUri: %v", err)
 	}
-	if !strings.Contains(got, "id%5B%5D=1") || !strings.Contains(got, "id%5B%5D=2") {
+	if !strings.Contains(got, "id[]=1") || !strings.Contains(got, "id[]=2") {
 		t.Errorf("brackets url = %q", got)
 	}
 
@@ -344,8 +348,10 @@ func TestDecompressDisabledNoAcceptEncoding(t *testing.T) {
 	if resp.Text() != "plain" {
 		t.Errorf("body = %q", resp.Text())
 	}
-	if gotAE != "" {
-		t.Errorf("accept-encoding should be unset when decompress disabled, got %q", gotAE)
+	// axios always advertises its codec list even with decompression disabled;
+	// the port matches so a server is free to send a compressed body.
+	if gotAE != "gzip, compress, deflate, br" {
+		t.Errorf("accept-encoding = %q", gotAE)
 	}
 }
 
@@ -362,10 +368,12 @@ func redirectChainServer() *httptest.Server {
 	}))
 }
 
+func redirectsPtr(i int) *int { return &i }
+
 func TestRedirectCapExceeded(t *testing.T) {
 	srv := redirectChainServer()
 	defer srv.Close()
-	c := New(Config{BaseURL: srv.URL, MaxRedirects: 2})
+	c := New(Config{BaseURL: srv.URL, MaxRedirects: redirectsPtr(2)})
 	if _, err := c.Get("/3"); err == nil {
 		t.Fatal("expected redirect cap error")
 	}
@@ -374,7 +382,7 @@ func TestRedirectCapExceeded(t *testing.T) {
 func TestRedirectWithinCap(t *testing.T) {
 	srv := redirectChainServer()
 	defer srv.Close()
-	c := New(Config{BaseURL: srv.URL, MaxRedirects: 10})
+	c := New(Config{BaseURL: srv.URL, MaxRedirects: redirectsPtr(10)})
 	resp, err := c.Get("/3")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -387,7 +395,8 @@ func TestRedirectWithinCap(t *testing.T) {
 func TestRedirectDisabled(t *testing.T) {
 	srv := redirectChainServer()
 	defer srv.Close()
-	c := New(Config{BaseURL: srv.URL, MaxRedirects: -1, ValidateStatus: func(int) bool { return true }})
+	// MaxRedirects 0 means "do not follow": the 3xx is returned as-is.
+	c := New(Config{BaseURL: srv.URL, MaxRedirects: redirectsPtr(0), ValidateStatus: func(int) bool { return true }})
 	resp, err := c.Get("/3")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -584,7 +593,7 @@ func TestIsAxiosErrorAndToJSON(t *testing.T) {
 	if j["name"] != "AxiosError" || j["status"] != 400 {
 		t.Errorf("toJSON = %v", j)
 	}
-	if j["code"] != ErrCodeBadResponse {
+	if j["code"] != ErrCodeBadRequest {
 		t.Errorf("code = %v", j["code"])
 	}
 	// MarshalJSON should round-trip.
