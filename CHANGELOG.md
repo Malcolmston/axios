@@ -63,3 +63,22 @@ compatible; existing code continues to work unchanged.
 - Initial release: configurable client, verb methods, automatic body
   encoding/decoding, interceptors, retries with backoff, typed `*Error` with
   `ValidateStatus`, and the generic `GetJSON` helper.
+
+## [Unreleased]
+
+## [0.4.0] - 2026-08-11
+### Changed
+- Measured parity against `axios@1.7.9` raised from 66.9% to 100% of compared
+  cases (149/151): `baseURL` combined via `BuildFullPath`/`CombineURLs`, params
+  appended after an existing query, bracket array format by default, axios'
+  Content-Type policy, `Data` auto-parsing JSON regardless of Content-Type,
+  reason-phrase `StatusText`, default `Accept`/`Accept-Encoding`, and axios error
+  codes (`ERR_BAD_REQUEST`, `ERR_BAD_RESPONSE`, `ERR_INVALID_URL`).
+
+### Breaking
+- `MaxRedirects` is now `*int` (nil = follow, 0 = do not follow, negative = fail,
+  positive = cap), so "unset" is distinguishable from "zero".
+
+### Known limitation
+- `Accept-Encoding` advertises `br` and `compress` to match axios, but only
+  gzip/deflate are decoded transparently.
